@@ -2,9 +2,8 @@ name: AI日报自动推送
 
 on:
   schedule:
-    # 每天北京时间 08:00 运行（UTC 00:00）
     - cron: '0 0 * * *'
-  workflow_dispatch:  # 允许手动触发，方便测试
+  workflow_dispatch:
 
 jobs:
   send-daily-report:
@@ -26,7 +25,6 @@ jobs:
       - name: 运行日报脚本
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-          WX_APP_ID: ${{ secrets.WX_APP_ID }}
-          WX_APP_SECRET: ${{ secrets.WX_APP_SECRET }}
+          FEISHU_WEBHOOK: ${{ secrets.FEISHU_WEBHOOK }}
         run: |
           python src/main.py
