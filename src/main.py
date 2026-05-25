@@ -247,12 +247,21 @@ def ai_filter_and_summarize(items):
 
 
 # ============================================================
-# 第三步：推送到微信订阅号
+# 第三步：推送到微信订阅号（客服消息接口，无需IP白名单）
 # ============================================================
+
+# 在 Secrets 里额外配置接收者微信 openid，多个用英文逗号分隔
+# 例如：WX_OPENIDS = "oXxx1,oXxx2,oXxx3"
+WX_OPENIDS = os.environ.get("WX_OPENIDS", "")
+
 
 def get_wx_access_token():
     """获取微信 access_token"""
-    url = f"https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={WX_APP_ID}&secret={WX_APP_SECRET}"
+    url = (
+        f"https://api.weixin.qq.com/cgi-bin/token"
+        f"?grant_type=client_credential"
+        f"&appid={WX_APP_ID}&secret={WX_APP_SECRET}"
+    )
     res = requests.get(url, timeout=10).json()
     token = res.get("access_token")
     if not token:
@@ -261,54 +270,62 @@ def get_wx_access_token():
     return token
 
 
-def upload_news_to_wx(token, title, content):
-    """将日报上传为微信图文素材"""
+def send_customer_message(token, openid, content):
+    """用客服消息接口给单个用户发文本消息（无需IP白名单）"""
+    url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+
+    # 微信客服消息单条限2048字，超长需分段
+    max_len = 2000
+    chunks = [content[i:i+max_len] for i in range(0, len(content), max_len)]
+
+    for i, chunk in enumerate(chunks):
+        payload = {
+            "touser": openid,
+            "msgtype": "text",
+            "text": {"content": chunk}
+        }
+        res = requests.post(url, json=payload, timeout=15).json()
+        if res.get("errcode") != 0:
+            raise Exception(f"客服消息发送失败 (第{i+1}段): {res}")
+        if len(chunks) > 1:
+            time.sleep(0.5)
+
+    print(f"  → 发送给 {openid[:8]}... 成功（共{len(chunks)}段）")
+
+
+def get_all_openids(token):
+    """获取所有关注者的 openid 列表"""
+    url = f"https://api.weixin.qq.com/cgi-bin/user/get?access_token={token}"
+    res = requests.get(url, timeout=10).json()
+    openids = res.get("data", {}).get("openid", [])
+    print(f"共有 {len(openids)} 位关注者")
+    return openids
+
+
+def push_report(token, report):
+    """推送日报给所有人"""
     today = datetime.now().strftime("%Y年%m月%d日")
+    full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
 
-    # 转为HTML格式（微信图文需要HTML）
-    html_content = content.replace("\n", "<br/>")
-    html_content = f"""
-<div style="font-family: -apple-system, sans-serif; font-size: 15px; line-height: 1.8; color: #333; padding: 10px;">
-{html_content}
-<br/><br/>
-<p style="color: #999; font-size: 12px;">— 由 AI日报机器人自动生成 · {today}</p>
-</div>
-"""
-
-    url = f"https://api.weixin.qq.com/cgi-bin/draft/add?access_token={token}"
-    payload = {
-        "articles": [{
-            "title": title,
-            "author": "AI日报",
-            "digest": f"{today} AI领域最新动态汇总",
-            "content": html_content,
-            "content_source_url": "https://aihot.today",
-            "thumb_media_id": "",  # 如有封面图填入media_id，否则留空
-            "need_open_comment": 0,
-        }]
-    }
-    res = requests.post(url, json=payload, timeout=15).json()
-    media_id = res.get("media_id")
-    if not media_id:
-        raise Exception(f"上传图文失败: {res}")
-    print(f"上传图文成功, media_id: {media_id}")
-    return media_id
-
-
-def publish_to_subscribers(token, media_id):
-    """群发给所有关注者"""
-    url = f"https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token={token}"
-    payload = {
-        "filter": {"is_to_all": True},
-        "mpnews": {"media_id": media_id},
-        "msgtype": "mpnews",
-        "send_ignore_reprint": 1
-    }
-    res = requests.post(url, json=payload, timeout=15).json()
-    if res.get("errcode") == 0:
-        print("群发成功！")
+    # 优先用手动配置的 openid，否则自动获取全部关注者
+    if WX_OPENIDS.strip():
+        openids = [oid.strip() for oid in WX_OPENIDS.split(",") if oid.strip()]
+        print(f"使用手动配置的 {len(openids)} 个openid")
     else:
-        raise Exception(f"群发失败: {res}")
+        openids = get_all_openids(token)
+
+    if not openids:
+        raise Exception("没有找到任何接收者，请检查订阅号是否有关注者，或在Secrets中配置WX_OPENIDS")
+
+    success = 0
+    for openid in openids:
+        try:
+            send_customer_message(token, openid, full_content)
+            success += 1
+        except Exception as e:
+            print(f"  → 发送给 {openid[:8]}... 失败: {e}")
+
+    print(f"推送完成：{success}/{len(openids)} 人成功收到")
 
 
 # ============================================================
@@ -336,18 +353,14 @@ def main():
     print(report)
     print("=" * 50)
 
-    # 3. 推送微信订阅号
-    today = datetime.now().strftime("%Y年%m月%d日")
-    title = f"AI日报 · {today}"
-
+    # 3. 推送微信订阅号（客服消息接口）
     try:
         token = get_wx_access_token()
-        media_id = upload_news_to_wx(token, title, report)
-        publish_to_subscribers(token, media_id)
+        push_report(token, report)
         print("日报推送完成！")
     except Exception as e:
         print(f"微信推送失败: {e}")
-        print("日报内容已生成，推送环节出错，请检查AppID和AppSecret配置")
+        print("请检查：1) AppID/AppSecret是否正确 2) 接收者是否关注了订阅号并在48小时内发过消息")
 
 
 if __name__ == "__main__":
