@@ -247,32 +247,30 @@ def ai_filter_and_summarize(items):
 
 
 # ============================================================
-# 第三步：通过腾讯云函数中转推送微信（固定IP，无白名单问题）
+# 第三步：推送到飞书群机器人（Webhook，无需IP白名单）
 # ============================================================
 
-SCF_URL = os.environ.get("SCF_URL", "")
-SECRET_TOKEN = os.environ.get("SECRET_TOKEN", "")
+FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 
 
-def push_via_scf(report):
-    """把日报发给腾讯云函数，由云函数负责推送微信"""
+def push_via_feishu(report):
+    """通过飞书群机器人 Webhook 推送日报"""
     today = datetime.now().strftime("%Y年%m月%d日")
     full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
 
-    if not SCF_URL:
-        raise Exception("SCF_URL 未配置，请在 GitHub Secrets 中添加")
+    if not FEISHU_WEBHOOK:
+        raise Exception("FEISHU_WEBHOOK 未配置，请在 GitHub Secrets 中添加")
 
     payload = {
-        "token": SECRET_TOKEN,
-        "content": full_content
+        "msg_type": "text",
+        "content": {"text": full_content}
     }
-    res = requests.post(SCF_URL, json=payload, timeout=30)
-    result = res.json()
+    res = requests.post(FEISHU_WEBHOOK, json=payload, timeout=15).json()
 
-    if result.get("ok"):
-        print(f"推送成功！共发送给 {result.get('sent', 0)} 人")
+    if res.get("code") == 0:
+        print("飞书推送成功！")
     else:
-        raise Exception(f"云函数返回错误: {result}")
+        raise Exception(f"飞书推送失败: {res}")
 
 
 # ============================================================
@@ -300,13 +298,13 @@ def main():
     print(report)
     print("=" * 50)
 
-    # 3. 通过腾讯云函数推送微信
+    # 3. 推送到飞书
     try:
-        push_via_scf(report)
+        push_via_feishu(report)
         print("日报推送完成！")
     except Exception as e:
         print(f"推送失败: {e}")
-        print("请检查 SCF_URL 和 SECRET_TOKEN 是否正确配置")
+        print("请检查 FEISHU_WEBHOOK 是否正确配置")
 
 
 if __name__ == "__main__":
