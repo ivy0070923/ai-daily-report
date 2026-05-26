@@ -7,22 +7,35 @@ from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 
 # ============================================================
-# 配置（从环境变量读取，不要直接填在这里）
+# 配置
 # ============================================================
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
-WX_APP_ID = os.environ.get("WX_APP_ID")
-WX_APP_SECRET = os.environ.get("WX_APP_SECRET")
+FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
+
+# 付费墙域名黑名单，抓取后过滤掉
+PAYWALL_DOMAINS = [
+    "ft.com", "wsj.com", "nytimes.com", "bloomberg.com",
+    "economist.com", "thetimes.co.uk", "telegraph.co.uk",
+    "hbr.org", "theatlantic.com", "wired.com", "businessinsider.com"
+]
+
+def is_paywalled(url):
+    """判断链接是否属于付费墙网站"""
+    for domain in PAYWALL_DOMAINS:
+        if domain in url:
+            return True
+    return False
+
 
 # ============================================================
 # 第一步：抓取各内容源
 # ============================================================
 
 def fetch_aihot_news():
-    """抓取 aihot.today AI新闻"""
     items = []
     try:
         res = requests.get("https://aihot.today/ai-news", headers=HEADERS, timeout=15)
@@ -32,14 +45,14 @@ def fetch_aihot_news():
             href = a.get("href", "")
             if len(title) > 10 and ("http" in href or href.startswith("/")):
                 url = href if href.startswith("http") else "https://aihot.today" + href
-                items.append({"title": title, "url": url, "source": "aihot新闻"})
+                if not is_paywalled(url):
+                    items.append({"title": title, "url": url, "source": "aihot新闻"})
     except Exception as e:
         print(f"[aihot新闻] 抓取失败: {e}")
     return items[:15]
 
 
 def fetch_aihot_events():
-    """抓取 aihot.today AI活动"""
     items = []
     try:
         res = requests.get("https://aihot.today/ai-event", headers=HEADERS, timeout=15)
@@ -49,19 +62,19 @@ def fetch_aihot_events():
             href = a.get("href", "")
             if len(title) > 10 and ("http" in href or href.startswith("/")):
                 url = href if href.startswith("http") else "https://aihot.today" + href
-                items.append({"title": title, "url": url, "source": "aihot活动"})
+                if not is_paywalled(url):
+                    items.append({"title": title, "url": url, "source": "aihot活动"})
     except Exception as e:
         print(f"[aihot活动] 抓取失败: {e}")
     return items[:10]
 
 
 def fetch_bestblogs():
-    """抓取 bestblogs.dev 精选文章"""
     items = []
     urls = [
         ("https://www.bestblogs.dev/articles", "精选文章"),
-        ("https://www.bestblogs.dev/videos",   "精选视频"),
-        ("https://www.bestblogs.dev/tweets",   "精选推文"),
+        ("https://www.bestblogs.dev/videos", "精选视频"),
+        ("https://www.bestblogs.dev/tweets", "精选推文"),
     ]
     for url, label in urls:
         try:
@@ -72,54 +85,35 @@ def fetch_bestblogs():
                 href = a.get("href", "")
                 if len(title) > 10 and ("http" in href or href.startswith("/")):
                     full_url = href if href.startswith("http") else "https://www.bestblogs.dev" + href
-                    items.append({"title": title, "url": full_url, "source": label})
+                    if not is_paywalled(full_url):
+                        items.append({"title": title, "url": full_url, "source": label})
         except Exception as e:
             print(f"[bestblogs {label}] 抓取失败: {e}")
     return items[:20]
 
 
-def fetch_techcrunch():
-    """抓取 TechCrunch RSS"""
+def fetch_rss(url, source_name, limit=15):
+    """通用RSS抓取函数"""
     items = []
     try:
-        res = requests.get("https://techcrunch.com/feed/", headers=HEADERS, timeout=15)
+        res = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(res.text, "xml")
-        for item in soup.select("item")[:20]:
-            title = item.find("title")
-            link = item.find("link")
-            if title and link:
-                items.append({
-                    "title": title.get_text(strip=True),
-                    "url": link.get_text(strip=True),
-                    "source": "TechCrunch"
-                })
-    except Exception as e:
-        print(f"[TechCrunch] 抓取失败: {e}")
-    return items[:15]
-
-
-def fetch_theverge():
-    """抓取 The Verge RSS"""
-    items = []
-    try:
-        res = requests.get("https://www.theverge.com/rss/index.xml", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(res.text, "xml")
-        for entry in soup.select("entry")[:20]:
+        # 兼容 item 和 entry 两种格式
+        entries = soup.select("item") or soup.select("entry")
+        for entry in entries[:limit]:
             title = entry.find("title")
             link = entry.find("link")
-            if title and link:
-                items.append({
-                    "title": title.get_text(strip=True),
-                    "url": link.get("href", ""),
-                    "source": "The Verge"
-                })
+            if title:
+                t = title.get_text(strip=True)
+                u = link.get_text(strip=True) if link and link.get_text(strip=True) else link.get("href", "") if link else ""
+                if t and u and not is_paywalled(u):
+                    items.append({"title": t, "url": u, "source": source_name})
     except Exception as e:
-        print(f"[The Verge] 抓取失败: {e}")
-    return items[:15]
+        print(f"[{source_name}] 抓取失败: {e}")
+    return items
 
 
 def fetch_hackernews():
-    """抓取 Hacker News AI相关"""
     items = []
     try:
         res = requests.get("https://hacker-news.firebaseio.com/v0/newstories.json", timeout=10)
@@ -127,26 +121,61 @@ def fetch_hackernews():
         for sid in story_ids[:30]:
             story = requests.get(f"https://hacker-news.firebaseio.com/v0/item/{sid}.json", timeout=5).json()
             if story and story.get("title"):
-                title = story.get("title", "")
                 url = story.get("url", f"https://news.ycombinator.com/item?id={sid}")
-                items.append({"title": title, "url": url, "source": "Hacker News"})
+                if not is_paywalled(url):
+                    items.append({"title": story["title"], "url": url, "source": "Hacker News"})
     except Exception as e:
         print(f"[Hacker News] 抓取失败: {e}")
     return items[:20]
 
 
+def fetch_lingowhale():
+    items = []
+    try:
+        res = requests.get("https://lingowhale.com/channels", headers=HEADERS, timeout=15)
+        soup = BeautifulSoup(res.text, "html.parser")
+        for a in soup.select("a[href]")[:20]:
+            title = a.get_text(strip=True)
+            href = a.get("href", "")
+            if len(title) > 10 and ("http" in href or href.startswith("/")):
+                url = href if href.startswith("http") else "https://lingowhale.com" + href
+                if not is_paywalled(url):
+                    items.append({"title": title, "url": url, "source": "LingoWhale"})
+    except Exception as e:
+        print(f"[LingoWhale] 抓取失败: {e}")
+    return items[:10]
+
+
 def collect_all_content():
-    """汇总所有内容源"""
     print("开始抓取内容源...")
     all_items = []
+
+    # 一、AI资讯聚合平台
     all_items += fetch_aihot_news()
     all_items += fetch_aihot_events()
     all_items += fetch_bestblogs()
-    all_items += fetch_techcrunch()
-    all_items += fetch_theverge()
+    all_items += fetch_lingowhale()
+
+    # 二、科技媒体
+    all_items += fetch_rss("https://techcrunch.com/feed/", "TechCrunch")
+    all_items += fetch_rss("https://www.theverge.com/rss/index.xml", "The Verge")
     all_items += fetch_hackernews()
 
-    # 去重（按标题）
+    # 三、中文AI专业媒体
+    all_items += fetch_rss("https://36kr.com/feed", "36氪")
+    all_items += fetch_rss("https://www.jiqizhixin.com/rss", "机器之心")
+    all_items += fetch_rss("https://www.qbitai.com/feed", "量子位")
+
+    # 四、AI企业官方博客
+    all_items += fetch_rss("https://www.anthropic.com/news.rss", "Anthropic")
+    all_items += fetch_rss("https://openai.com/blog/rss.xml", "OpenAI")
+    all_items += fetch_rss("https://blog.google/technology/ai/rss/", "Google AI")
+
+    # 五、AI变现与应用
+    all_items += fetch_rss("https://www.producthunt.com/feed", "ProductHunt")
+    all_items += fetch_rss("https://www.indiehackers.com/feed.rss", "IndieHackers")
+
+    # 去重
     seen = set()
     unique = []
     for item in all_items:
@@ -155,7 +184,7 @@ def collect_all_content():
             seen.add(key)
             unique.append(item)
 
-    print(f"共抓取 {len(unique)} 条原始内容")
+    print(f"共抓取 {len(unique)} 条原始内容（已过滤付费墙）")
     return unique
 
 
@@ -164,11 +193,7 @@ def collect_all_content():
 # ============================================================
 
 def ai_filter_and_summarize(items):
-    """用 DeepSeek 过滤AI相关内容并生成中文日报"""
-
     today = datetime.now().strftime("%Y年%m月%d日")
-
-    # 把所有条目整理成文本
     raw_text = ""
     for i, item in enumerate(items):
         raw_text += f"{i+1}. [{item['source']}] {item['title']}\n   链接：{item['url']}\n"
@@ -247,19 +272,15 @@ def ai_filter_and_summarize(items):
 
 
 # ============================================================
-# 第三步：推送到飞书群机器人（Webhook，无需IP白名单）
+# 第三步：推送到飞书群机器人
 # ============================================================
 
-FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
-
-
 def push_via_feishu(report):
-    """通过飞书群机器人 Webhook 推送日报"""
     today = datetime.now().strftime("%Y年%m月%d日")
     full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
 
     if not FEISHU_WEBHOOK:
-        raise Exception("FEISHU_WEBHOOK 未配置，请在 GitHub Secrets 中添加")
+        raise Exception("FEISHU_WEBHOOK 未配置")
 
     payload = {
         "msg_type": "text",
@@ -282,13 +303,11 @@ def main():
     print(f"AI日报开始运行：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print("=" * 50)
 
-    # 1. 抓取内容
     items = collect_all_content()
     if not items:
         print("未抓取到任何内容，退出")
         return
 
-    # 2. AI过滤+总结
     report = ai_filter_and_summarize(items)
     if not report:
         print("AI总结失败，退出")
@@ -298,13 +317,11 @@ def main():
     print(report)
     print("=" * 50)
 
-    # 3. 推送到飞书
     try:
         push_via_feishu(report)
         print("日报推送完成！")
     except Exception as e:
         print(f"推送失败: {e}")
-        print("请检查 FEISHU_WEBHOOK 是否正确配置")
 
 
 if __name__ == "__main__":
