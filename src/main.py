@@ -15,6 +15,7 @@ WX_TEST_APPID = os.environ.get("WX_TEST_APPID", "")
 WX_TEST_SECRET = os.environ.get("WX_TEST_SECRET", "")
 WX_TEST_OPENIDS = os.environ.get("WX_TEST_OPENIDS", "")
 GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", "")
+BESTBLOGS_API_KEY = os.environ.get("BESTBLOGS_API_KEY", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -37,83 +38,80 @@ def is_paywalled(url):
 # 第一步：抓取各内容源
 # ============================================================
 
-def fetch_aihot_news():
-    items = []
-    try:
-        res = requests.get("https://aihot.today/ai-news", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(res.text, "html.parser")
-        # aihot 用 h3 标签包裹文章标题
-        for h3 in soup.select("h3"):
-            title = h3.get_text(strip=True)
-            # 找最近的父级 a 标签
-            parent_a = h3.find_parent("a")
-            if not parent_a:
-                # 或者找兄弟/祖先中的 a
-                parent_a = h3.find_parent(lambda tag: tag.name == "a" and tag.get("href"))
-            if parent_a and len(title) > 10:
-                href = parent_a.get("href", "")
-                url = href if href.startswith("http") else "https://aihot.today" + href
-                if url and not is_paywalled(url) and "aihot.today" not in url:
-                    items.append({"title": title, "url": url, "source": "aihot新闻"})
-        # 如果 h3 没抓到，降级用文章链接选择器
-        if not items:
-            for a in soup.select("a[href]"):
-                title = a.get_text(strip=True)
-                href = a.get("href", "")
-                if len(title) > 15 and href.startswith("http") and "aihot.today" not in href:
-                    if not is_paywalled(href):
-                        items.append({"title": title, "url": href, "source": "aihot新闻"})
-                        if len(items) >= 15:
-                            break
-    except Exception as e:
-        print(f"[aihot新闻] 抓取失败: {e}")
-    print(f"[aihot新闻] 抓取到 {len(items[:15])} 条")
-    return items[:15]
-
-
-def fetch_aihot_events():
-    items = []
-    try:
-        res = requests.get("https://aihot.today/ai-event", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(res.text, "html.parser")
-        for a in soup.select("a[href]")[:20]:
-            title = a.get_text(strip=True)
-            href = a.get("href", "")
-            if len(title) > 10 and ("http" in href or href.startswith("/")):
-                url = href if href.startswith("http") else "https://aihot.today" + href
-                if not is_paywalled(url):
-                    items.append({"title": title, "url": url, "source": "aihot活动"})
-    except Exception as e:
-        print(f"[aihot活动] 抓取失败: {e}")
-    return items[:10]
-
-
 def fetch_bestblogs():
+    """通过 BestBlogs 官方 API 获取内容（免费版：公共早报 + 精选列表）"""
     items = []
-    # 使用每日早报页面，内容是服务端渲染的
-    urls = [
-        ("https://www.bestblogs.dev/explore/brief", "BestBlogs早报"),
-        ("https://www.bestblogs.dev/explore?type=article", "精选文章"),
-    ]
-    for url, label in urls:
-        try:
-            res = requests.get(url, headers=HEADERS, timeout=15)
-            soup = BeautifulSoup(res.text, "html.parser")
-            # 抓取所有外链（非 bestblogs 自身的链接）
-            for a in soup.select("a[href]"):
-                href = a.get("href", "")
-                title = a.get_text(strip=True)
-                if (len(title) > 10
-                        and href.startswith("http")
-                        and "bestblogs.dev" not in href
-                        and not is_paywalled(href)):
-                    items.append({"title": title, "url": href, "source": label})
-                    if len(items) >= 20:
-                        break
-        except Exception as e:
-            print(f"[{label}] 抓取失败: {e}")
-    print(f"[bestblogs] 抓取到 {len(items[:20])} 条")
-    return items[:20]
+    if not BESTBLOGS_API_KEY:
+        print("[bestblogs] 未配置 API Key，跳过")
+        return items
+
+    api_headers = {
+        "Authorization": f"Bearer {BESTBLOGS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    def extract_items(data, source_name):
+        """从 API 响应中提取文章列表，兼容多种返回结构"""
+        result = []
+        # 尝试各种可能的字段名
+        for key in ["resources", "items", "data", "articles", "list"]:
+            resources = data.get(key, [])
+            if resources and isinstance(resources, list):
+                for r in resources:
+                    if not isinstance(r, dict):
+                        continue
+                    title = (r.get("title") or r.get("name") or r.get("headline") or "").strip()
+                    url = (r.get("url") or r.get("link") or r.get("sourceUrl") or "").strip()
+                    if title and url and url.startswith("http") and not is_paywalled(url):
+                        result.append({"title": title, "url": url, "source": source_name})
+                break
+        return result
+
+    # 1. 公共早报（今天）
+    try:
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        res = requests.get(
+            f"https://bestblogs.dev/api/v2/brief?date={today_str}&flavor=public",
+            headers=api_headers, timeout=15
+        )
+        print(f"[bestblogs早报] 状态码: {res.status_code}")
+        if res.status_code == 200:
+            data = res.json()
+            brief_items = extract_items(data, "BestBlogs早报")
+            # 早报可能直接是文章对象列表
+            if not brief_items and isinstance(data, list):
+                for r in data:
+                    if isinstance(r, dict):
+                        title = (r.get("title") or r.get("name") or "").strip()
+                        url = (r.get("url") or r.get("link") or "").strip()
+                        if title and url and not is_paywalled(url):
+                            brief_items.append({"title": title, "url": url, "source": "BestBlogs早报"})
+            items += brief_items[:15]
+            print(f"[bestblogs早报] 获取到 {len(brief_items[:15])} 条")
+        else:
+            print(f"[bestblogs早报] 响应: {res.text[:200]}")
+    except Exception as e:
+        print(f"[bestblogs早报] 失败: {e}")
+
+    # 2. 精选内容列表（最近24小时，AI相关）
+    try:
+        res = requests.get(
+            "https://bestblogs.dev/api/v2/resources?type=article&time=24h&language=all&qualified=true&limit=20",
+            headers=api_headers, timeout=15
+        )
+        print(f"[bestblogs精选] 状态码: {res.status_code}")
+        if res.status_code == 200:
+            data = res.json()
+            resource_items = extract_items(data, "BestBlogs精选")
+            items += resource_items[:15]
+            print(f"[bestblogs精选] 获取到 {len(resource_items[:15])} 条")
+        else:
+            print(f"[bestblogs精选] 响应: {res.text[:200]}")
+    except Exception as e:
+        print(f"[bestblogs精选] 失败: {e}")
+
+    print(f"[bestblogs] 共获取 {len(items)} 条")
+    return items
 
 
 def fetch_rss(url, source_name, limit=15):
@@ -151,24 +149,56 @@ def fetch_hackernews():
     return items[:20]
 
 
+# AI 相关关键词，用于第一层预过滤
+AI_KEYWORDS = [
+    "ai", "artificial intelligence", "machine learning", "deep learning",
+    "llm", "gpt", "claude", "gemini", "openai", "anthropic", "deepseek",
+    "chatgpt", "copilot", "agent", "model", "neural", "transformer",
+    "robot", "automation", "ml ", "nlp", "diffusion", "midjourney",
+    "stable diffusion", "hugging face", "nvidia", "gpu", "inference",
+    "人工智能", "大模型", "机器学习", "深度学习", "语言模型", "智能体",
+    "算法", "训练", "推理", "生成式", "多模态", "向量", "embedding",
+]
+
+def is_ai_related(title):
+    """预判断标题是否与AI相关"""
+    title_lower = title.lower()
+    return any(kw in title_lower for kw in AI_KEYWORDS)
+
+
 def collect_all_content():
     print("开始抓取内容源...")
     all_items = []
-    all_items += fetch_aihot_news()
-    all_items += fetch_aihot_events()
-    all_items += fetch_bestblogs()
-    all_items += fetch_rss("https://techcrunch.com/feed/", "TechCrunch")
-    all_items += fetch_rss("https://www.theverge.com/rss/index.xml", "The Verge")
-    all_items += fetch_hackernews()
-    all_items += fetch_rss("https://36kr.com/feed", "36氪")
-    all_items += fetch_rss("https://www.jiqizhixin.com/rss", "机器之心")
-    all_items += fetch_rss("https://www.qbitai.com/feed", "量子位")
-    all_items += fetch_rss("https://www.anthropic.com/news.rss", "Anthropic")
-    all_items += fetch_rss("https://openai.com/blog/rss.xml", "OpenAI")
-    all_items += fetch_rss("https://blog.google/technology/ai/rss/", "Google AI")
-    all_items += fetch_rss("https://www.producthunt.com/feed", "ProductHunt")
-    all_items += fetch_rss("https://www.indiehackers.com/feed.rss", "IndieHackers")
 
+    # 高价值来源：全量抓取不限制
+    all_items += fetch_bestblogs()
+    all_items += fetch_rss("https://www.anthropic.com/news.rss", "Anthropic", limit=20)
+    all_items += fetch_rss("https://openai.com/blog/rss.xml", "OpenAI", limit=20)
+    all_items += fetch_rss("https://blog.google/technology/ai/rss/", "Google AI", limit=20)
+
+    # 中文AI专媒：全量抓取（本身已是AI内容）
+    all_items += fetch_rss("https://www.jiqizhixin.com/rss", "机器之心", limit=20)
+    all_items += fetch_rss("https://www.qbitai.com/feed", "量子位", limit=20)
+    all_items += fetch_rss("https://36kr.com/feed", "36氪", limit=20)
+
+    # 综合科技媒体：先抓多条再预过滤AI相关
+    techcrunch_raw = fetch_rss("https://techcrunch.com/feed/", "TechCrunch", limit=30)
+    all_items += [i for i in techcrunch_raw if is_ai_related(i["title"])]
+
+    verge_raw = fetch_rss("https://www.theverge.com/rss/index.xml", "The Verge", limit=30)
+    all_items += [i for i in verge_raw if is_ai_related(i["title"])]
+
+    hn_raw = fetch_hackernews()
+    all_items += [i for i in hn_raw if is_ai_related(i["title"])]
+
+    # AI变现/产品：预过滤
+    ph_raw = fetch_rss("https://www.producthunt.com/feed", "ProductHunt", limit=30)
+    all_items += [i for i in ph_raw if is_ai_related(i["title"])]
+
+    ih_raw = fetch_rss("https://www.indiehackers.com/feed.rss", "IndieHackers", limit=20)
+    all_items += [i for i in ih_raw if is_ai_related(i["title"])]
+
+    # 去重（按标题前20字）
     seen = set()
     unique = []
     for item in all_items:
@@ -177,7 +207,7 @@ def collect_all_content():
             seen.add(key)
             unique.append(item)
 
-    print(f"共抓取 {len(unique)} 条原始内容（已过滤付费墙）")
+    print(f"共抓取 {len(unique)} 条AI相关内容（已预过滤+去重）")
     return unique
 
 
@@ -193,18 +223,18 @@ def ai_filter_and_summarize(items):
 
     prompt = f"""你是一个专业的AI行业日报编辑。今天是{today}。
 
-请从以下原始内容中筛选AI相关内容，翻译成中文，并以JSON格式输出。
+以下内容已经过AI关键词预过滤，请进一步处理并以JSON格式输出日报。
 
-筛选主题：AI模型动态、AI应用产品、AI商业变现、AI企业动态、AI学习活动
-
-重要规则：
-1. 来源多样性：尽量从不同来源各选1-2条，避免同一来源占太多条目
-2. 优先选择高价值来源：Anthropic、OpenAI、Google AI、TechCrunch、The Verge、36氪、机器之心、量子位、aihot新闻、aihot活动、精选文章、精选视频、精选推文
-3. 所有英文标题必须翻译成中文
-4. 每个分类最多5条，整体最多20条
+处理规则：
+1. 【翻译】所有英文标题必须翻译成准确流畅的中文
+2. 【优先级】优先展示以下来源的内容（排在前面）：
+   Anthropic > OpenAI > Google AI > 机器之心 > 量子位 > 36氪 > TechCrunch > The Verge > BestBlogs早报 > BestBlogs精选 > 其他
+3. 【分类】按主题分类，每个分类不限条数，有多少放多少
+4. 【去重】相同事件不同来源只保留优先级最高的那条
 5. 没有相关内容的分类返回空数组
+6. 只输出JSON，不要任何其他文字
 
-输出格式（只输出JSON，不要任何其他文字）：
+输出格式：
 {{
   "date": "{today}",
   "sections": [
