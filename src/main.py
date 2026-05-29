@@ -175,6 +175,13 @@ def ai_filter_and_summarize(items):
 
 筛选主题：AI模型动态、AI应用产品、AI商业变现、AI企业动态、AI学习活动
 
+重要规则：
+1. 来源多样性：尽量从不同来源各选1-2条，避免同一来源占太多条目
+2. 优先选择高价值来源：Anthropic、OpenAI、Google AI、TechCrunch、The Verge、36氪、机器之心、量子位、aihot新闻、aihot活动、精选文章、精选视频、精选推文
+3. 所有英文标题必须翻译成中文
+4. 每个分类最多5条，整体最多20条
+5. 没有相关内容的分类返回空数组
+
 输出格式（只输出JSON，不要任何其他文字）：
 {{
   "date": "{today}",
@@ -203,8 +210,6 @@ def ai_filter_and_summarize(items):
     }}
   ]
 }}
-
-每个分类最多5条，没有内容的分类返回空数组。
 
 原始内容：
 {raw_text}
@@ -359,25 +364,75 @@ def generate_html(data):
 # 第四步：推送通知（飞书 + 微信，只发链接）
 # ============================================================
 
-def push_notification(today):
-    url = GITHUB_PAGES_URL or "https://ivy0070923.github.io/ai-daily-report/"
-    msg = f"📬 AI日报 · {today}\n今日日报已生成，点击查看：\n{url}"
+def build_text_report(data):
+    """把结构化数据转成纯文本日报"""
+    today = data.get("date", "")
+    lines = [f"📬 AI日报 · {today}", ""]
+    for section in data.get("sections", []):
+        if not section.get("items"):
+            continue
+        lines.append(section["title"])
+        for item in section["items"]:
+            lines.append(f"• {item['title']}")
+            lines.append(f"  {item['url']}")
+        lines.append("")
+    lines.append("— 由AI日报机器人自动生成")
+    return "\n".join(lines)
 
-    # 飞书推送
+
+def push_notification(data):
+    today = data.get("date", datetime.now().strftime("%Y年%m月%d日"))
+    text_report = build_text_report(data)
+
+    # 飞书推送（富文本卡片，完整日报内容）
     if FEISHU_WEBHOOK:
         try:
-            res = requests.post(FEISHU_WEBHOOK, json={
-                "msg_type": "text",
-                "content": {"text": msg}
-            }, timeout=15).json()
+            # 构建飞书卡片消息
+            elements = []
+            for section in data.get("sections", []):
+                if not section.get("items"):
+                    continue
+                elements.append({
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": f"**{section['title']}**"}
+                })
+                for item in section["items"]:
+                    elements.append({
+                        "tag": "div",
+                        "text": {
+                            "tag": "lark_md",
+                            "content": f"[{item['title']}]({item['url']})  `{item['source']}`"
+                        }
+                    })
+                elements.append({"tag": "hr"})
+
+            card_payload = {
+                "msg_type": "interactive",
+                "card": {
+                    "header": {
+                        "title": {"tag": "plain_text", "content": f"📬 AI日报 · {today}"},
+                        "template": "purple"
+                    },
+                    "elements": elements + [{
+                        "tag": "note",
+                        "elements": [{"tag": "plain_text", "content": "由AI日报机器人自动生成"}]
+                    }]
+                }
+            }
+            res = requests.post(FEISHU_WEBHOOK, json=card_payload, timeout=15).json()
             if res.get("code") == 0:
                 print("飞书推送成功！")
             else:
-                print(f"飞书推送失败: {res}")
+                # 降级为纯文本
+                res2 = requests.post(FEISHU_WEBHOOK, json={
+                    "msg_type": "text",
+                    "content": {"text": text_report}
+                }, timeout=15).json()
+                print(f"飞书卡片失败，纯文本推送: {res2.get('code')}")
         except Exception as e:
             print(f"飞书推送异常: {e}")
 
-    # 微信推送
+    # 微信推送（只发一条短消息+链接，避免乱码和超长）
     if WX_TEST_APPID and WX_TEST_SECRET and WX_TEST_OPENIDS:
         try:
             token_res = requests.get(
@@ -390,18 +445,27 @@ def push_notification(today):
 
             openids = [o.strip() for o in WX_TEST_OPENIDS.split(",") if o.strip()]
             wx_url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+            pages_url = "https://ivy0070923.github.io/ai-daily-report/"
+
+            # 只发一条纯文字通知+链接（无emoji，避免乱码）
+            msg = f"AI日报 {today} 已更新\n点击查看完整内容：\n{pages_url}"
+
             success = 0
             for openid in openids:
-                res = requests.post(wx_url, json={
-                    "touser": openid,
-                    "msgtype": "text",
-                    "text": {"content": msg}
-                }, timeout=15).json()
-                if res.get("errcode") == 0:
-                    success += 1
-                    print(f"  微信发送给 {openid[:8]}... 成功")
-                else:
-                    print(f"  微信发送给 {openid[:8]}... 失败: {res}")
+                try:
+                    res = requests.post(wx_url, json={
+                        "touser": openid,
+                        "msgtype": "text",
+                        "text": {"content": msg}
+                    }, timeout=15).json()
+                    if res.get("errcode") == 0:
+                        success += 1
+                        print(f"  微信发送给 {openid[:8]}... 成功")
+                    else:
+                        print(f"  微信发送给 {openid[:8]}... 失败: {res}")
+                except Exception as e:
+                    print(f"  微信发送给 {openid[:8]}... 异常: {e}")
+
             print(f"微信推送完成：{success}/{len(openids)} 人成功")
         except Exception as e:
             print(f"微信推送异常: {e}")
@@ -429,7 +493,7 @@ def main():
     generate_html(data)
 
     today = data.get("date", datetime.now().strftime("%Y年%m月%d日"))
-    push_notification(today)
+    push_notification(data)
 
     print("全部完成！")
 
