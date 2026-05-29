@@ -272,15 +272,22 @@ def ai_filter_and_summarize(items):
 
 
 # ============================================================
-# 第三步：推送到飞书群机器人
+# 第三步：推送（飞书 + 微信测试号，同时发送）
 # ============================================================
 
+WX_TEST_APPID = os.environ.get("WX_TEST_APPID", "")
+WX_TEST_SECRET = os.environ.get("WX_TEST_SECRET", "")
+WX_TEST_OPENIDS = os.environ.get("WX_TEST_OPENIDS", "")
+
+
 def push_via_feishu(report):
+    """推送到飞书群机器人"""
     today = datetime.now().strftime("%Y年%m月%d日")
     full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
 
     if not FEISHU_WEBHOOK:
-        raise Exception("FEISHU_WEBHOOK 未配置")
+        print("FEISHU_WEBHOOK 未配置，跳过飞书推送")
+        return
 
     payload = {
         "msg_type": "text",
@@ -291,7 +298,63 @@ def push_via_feishu(report):
     if res.get("code") == 0:
         print("飞书推送成功！")
     else:
-        raise Exception(f"飞书推送失败: {res}")
+        print(f"飞书推送失败: {res}")
+
+
+def get_wx_token():
+    """获取微信测试号 access_token"""
+    url = (
+        f"https://api.weixin.qq.com/cgi-bin/token"
+        f"?grant_type=client_credential"
+        f"&appid={WX_TEST_APPID}&secret={WX_TEST_SECRET}"
+    )
+    res = requests.get(url, timeout=10).json()
+    token = res.get("access_token")
+    if not token:
+        raise Exception(f"获取微信Token失败: {res}")
+    return token
+
+
+def push_via_wx(report):
+    """推送到微信测试号（客服消息，无需IP白名单）"""
+    if not WX_TEST_APPID or not WX_TEST_SECRET or not WX_TEST_OPENIDS:
+        print("微信测试号未配置，跳过微信推送")
+        return
+
+    today = datetime.now().strftime("%Y年%m月%d日")
+    full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
+    openids = [o.strip() for o in WX_TEST_OPENIDS.split(",") if o.strip()]
+
+    try:
+        token = get_wx_token()
+    except Exception as e:
+        print(f"微信推送失败: {e}")
+        return
+
+    url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+    max_len = 2000
+    chunks = [full_content[i:i+max_len] for i in range(0, len(full_content), max_len)]
+
+    success = 0
+    for openid in openids:
+        try:
+            for chunk in chunks:
+                payload = {
+                    "touser": openid,
+                    "msgtype": "text",
+                    "text": {"content": chunk}
+                }
+                res = requests.post(url, json=payload, timeout=15).json()
+                if res.get("errcode") != 0:
+                    raise Exception(f"发送失败: {res}")
+                if len(chunks) > 1:
+                    time.sleep(0.5)
+            success += 1
+            print(f"  微信发送给 {openid[:8]}... 成功")
+        except Exception as e:
+            print(f"  微信发送给 {openid[:8]}... 失败: {e}")
+
+    print(f"微信推送完成：{success}/{len(openids)} 人成功")
 
 
 # ============================================================
@@ -317,11 +380,10 @@ def main():
     print(report)
     print("=" * 50)
 
-    try:
-        push_via_feishu(report)
-        print("日报推送完成！")
-    except Exception as e:
-        print(f"推送失败: {e}")
+    # 飞书和微信同时推送
+    push_via_feishu(report)
+    push_via_wx(report)
+    print("全部推送完成！")
 
 
 if __name__ == "__main__":
