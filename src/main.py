@@ -42,15 +42,32 @@ def fetch_aihot_news():
     try:
         res = requests.get("https://aihot.today/ai-news", headers=HEADERS, timeout=15)
         soup = BeautifulSoup(res.text, "html.parser")
-        for a in soup.select("a[href]")[:30]:
-            title = a.get_text(strip=True)
-            href = a.get("href", "")
-            if len(title) > 10 and ("http" in href or href.startswith("/")):
+        # aihot 用 h3 标签包裹文章标题
+        for h3 in soup.select("h3"):
+            title = h3.get_text(strip=True)
+            # 找最近的父级 a 标签
+            parent_a = h3.find_parent("a")
+            if not parent_a:
+                # 或者找兄弟/祖先中的 a
+                parent_a = h3.find_parent(lambda tag: tag.name == "a" and tag.get("href"))
+            if parent_a and len(title) > 10:
+                href = parent_a.get("href", "")
                 url = href if href.startswith("http") else "https://aihot.today" + href
-                if not is_paywalled(url):
+                if url and not is_paywalled(url) and "aihot.today" not in url:
                     items.append({"title": title, "url": url, "source": "aihot新闻"})
+        # 如果 h3 没抓到，降级用文章链接选择器
+        if not items:
+            for a in soup.select("a[href]"):
+                title = a.get_text(strip=True)
+                href = a.get("href", "")
+                if len(title) > 15 and href.startswith("http") and "aihot.today" not in href:
+                    if not is_paywalled(href):
+                        items.append({"title": title, "url": href, "source": "aihot新闻"})
+                        if len(items) >= 15:
+                            break
     except Exception as e:
         print(f"[aihot新闻] 抓取失败: {e}")
+    print(f"[aihot新闻] 抓取到 {len(items[:15])} 条")
     return items[:15]
 
 
@@ -73,24 +90,29 @@ def fetch_aihot_events():
 
 def fetch_bestblogs():
     items = []
+    # 使用每日早报页面，内容是服务端渲染的
     urls = [
-        ("https://www.bestblogs.dev/articles", "精选文章"),
-        ("https://www.bestblogs.dev/videos", "精选视频"),
-        ("https://www.bestblogs.dev/tweets", "精选推文"),
+        ("https://www.bestblogs.dev/explore/brief", "BestBlogs早报"),
+        ("https://www.bestblogs.dev/explore?type=article", "精选文章"),
     ]
     for url, label in urls:
         try:
             res = requests.get(url, headers=HEADERS, timeout=15)
             soup = BeautifulSoup(res.text, "html.parser")
-            for a in soup.select("a[href]")[:20]:
-                title = a.get_text(strip=True)
+            # 抓取所有外链（非 bestblogs 自身的链接）
+            for a in soup.select("a[href]"):
                 href = a.get("href", "")
-                if len(title) > 10 and ("http" in href or href.startswith("/")):
-                    full_url = href if href.startswith("http") else "https://www.bestblogs.dev" + href
-                    if not is_paywalled(full_url):
-                        items.append({"title": title, "url": full_url, "source": label})
+                title = a.get_text(strip=True)
+                if (len(title) > 10
+                        and href.startswith("http")
+                        and "bestblogs.dev" not in href
+                        and not is_paywalled(href)):
+                    items.append({"title": title, "url": href, "source": label})
+                    if len(items) >= 20:
+                        break
         except Exception as e:
-            print(f"[bestblogs {label}] 抓取失败: {e}")
+            print(f"[{label}] 抓取失败: {e}")
+    print(f"[bestblogs] 抓取到 {len(items[:20])} 条")
     return items[:20]
 
 
