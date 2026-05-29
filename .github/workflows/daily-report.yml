@@ -2,8 +2,13 @@ name: AI日报自动推送
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '50 23 * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
 
 jobs:
   send-daily-report:
@@ -29,5 +34,23 @@ jobs:
           WX_TEST_APPID: ${{ secrets.WX_TEST_APPID }}
           WX_TEST_SECRET: ${{ secrets.WX_TEST_SECRET }}
           WX_TEST_OPENIDS: ${{ secrets.WX_TEST_OPENIDS }}
+          GITHUB_PAGES_URL: https://ivy0070923.github.io/ai-daily-report/
         run: |
           python src/main.py
+
+      - name: 发布到 GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: send-daily-report
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: 部署到 GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
