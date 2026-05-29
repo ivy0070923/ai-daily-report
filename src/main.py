@@ -171,7 +171,8 @@ def collect_all_content():
     all_items = []
 
     # 高价值来源：全量抓取不限制
-    all_items += fetch_bestblogs()
+    # BestBlogs API 暂时跳过（GitHub Actions IP被封）
+    # all_items += fetch_bestblogs()
     all_items += fetch_rss("https://www.anthropic.com/news.rss", "Anthropic", limit=20)
     all_items += fetch_rss("https://openai.com/blog/rss.xml", "OpenAI", limit=20)
     all_items += fetch_rss("https://blog.google/technology/ai/rss/", "Google AI", limit=20)
@@ -217,9 +218,17 @@ def collect_all_content():
 
 def ai_filter_and_summarize(items):
     today = datetime.now().strftime("%Y年%m月%d日")
+    # 限制最多40条，按优先级来源排序后截取
+    PRIORITY_SOURCES = ["Anthropic", "OpenAI", "Google AI", "机器之心", "量子位", "36氪",
+                        "TechCrunch", "The Verge", "BestBlogs早报", "BestBlogs精选"]
+    priority_items = [i for i in items if i["source"] in PRIORITY_SOURCES]
+    other_items = [i for i in items if i["source"] not in PRIORITY_SOURCES]
+    items = (priority_items + other_items)[:40]
+
+    # 只传标题和链接，减少token消耗
     raw_text = ""
     for i, item in enumerate(items):
-        raw_text += f"{i+1}. [{item['source']}] {item['title']}\n   链接：{item['url']}\n"
+        raw_text += f"{i+1}. [{item['source']}] {item['title']}\n   {item['url']}\n"
 
     prompt = f"""你是一个专业的AI行业日报编辑。今天是{today}。
 
@@ -277,7 +286,7 @@ def ai_filter_and_summarize(items):
             json={
                 "model": "deepseek-chat",
                 "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 3000,
+                "max_tokens": 4000,
                 "temperature": 0.3
             },
             timeout=60
