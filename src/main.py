@@ -3,7 +3,7 @@ import re
 import json
 import time
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime
 from bs4 import BeautifulSoup
 
 # ============================================================
@@ -11,12 +11,15 @@ from bs4 import BeautifulSoup
 # ============================================================
 DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY")
 FEISHU_WEBHOOK = os.environ.get("FEISHU_WEBHOOK", "")
+WX_TEST_APPID = os.environ.get("WX_TEST_APPID", "")
+WX_TEST_SECRET = os.environ.get("WX_TEST_SECRET", "")
+WX_TEST_OPENIDS = os.environ.get("WX_TEST_OPENIDS", "")
+GITHUB_PAGES_URL = os.environ.get("GITHUB_PAGES_URL", "")
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# 付费墙域名黑名单，抓取后过滤掉
 PAYWALL_DOMAINS = [
     "ft.com", "wsj.com", "nytimes.com", "bloomberg.com",
     "economist.com", "thetimes.co.uk", "telegraph.co.uk",
@@ -24,7 +27,6 @@ PAYWALL_DOMAINS = [
 ]
 
 def is_paywalled(url):
-    """判断链接是否属于付费墙网站"""
     for domain in PAYWALL_DOMAINS:
         if domain in url:
             return True
@@ -93,12 +95,10 @@ def fetch_bestblogs():
 
 
 def fetch_rss(url, source_name, limit=15):
-    """通用RSS抓取函数"""
     items = []
     try:
         res = requests.get(url, headers=HEADERS, timeout=15)
         soup = BeautifulSoup(res.text, "xml")
-        # 兼容 item 和 entry 两种格式
         entries = soup.select("item") or soup.select("entry")
         for entry in entries[:limit]:
             title = entry.find("title")
@@ -129,53 +129,24 @@ def fetch_hackernews():
     return items[:20]
 
 
-def fetch_lingowhale():
-    items = []
-    try:
-        res = requests.get("https://lingowhale.com/channels", headers=HEADERS, timeout=15)
-        soup = BeautifulSoup(res.text, "html.parser")
-        for a in soup.select("a[href]")[:20]:
-            title = a.get_text(strip=True)
-            href = a.get("href", "")
-            if len(title) > 10 and ("http" in href or href.startswith("/")):
-                url = href if href.startswith("http") else "https://lingowhale.com" + href
-                if not is_paywalled(url):
-                    items.append({"title": title, "url": url, "source": "LingoWhale"})
-    except Exception as e:
-        print(f"[LingoWhale] 抓取失败: {e}")
-    return items[:10]
-
-
 def collect_all_content():
     print("开始抓取内容源...")
     all_items = []
-
-    # 一、AI资讯聚合平台
     all_items += fetch_aihot_news()
     all_items += fetch_aihot_events()
     all_items += fetch_bestblogs()
-    all_items += fetch_lingowhale()
-
-    # 二、科技媒体
     all_items += fetch_rss("https://techcrunch.com/feed/", "TechCrunch")
     all_items += fetch_rss("https://www.theverge.com/rss/index.xml", "The Verge")
     all_items += fetch_hackernews()
-
-    # 三、中文AI专业媒体
     all_items += fetch_rss("https://36kr.com/feed", "36氪")
     all_items += fetch_rss("https://www.jiqizhixin.com/rss", "机器之心")
     all_items += fetch_rss("https://www.qbitai.com/feed", "量子位")
-
-    # 四、AI企业官方博客
     all_items += fetch_rss("https://www.anthropic.com/news.rss", "Anthropic")
     all_items += fetch_rss("https://openai.com/blog/rss.xml", "OpenAI")
     all_items += fetch_rss("https://blog.google/technology/ai/rss/", "Google AI")
-
-    # 五、AI变现与应用
     all_items += fetch_rss("https://www.producthunt.com/feed", "ProductHunt")
     all_items += fetch_rss("https://www.indiehackers.com/feed.rss", "IndieHackers")
 
-    # 去重
     seen = set()
     unique = []
     for item in all_items:
@@ -189,7 +160,7 @@ def collect_all_content():
 
 
 # ============================================================
-# 第二步：DeepSeek AI 过滤+翻译+总结
+# 第二步：DeepSeek AI 过滤+翻译+总结（返回结构化数据）
 # ============================================================
 
 def ai_filter_and_summarize(items):
@@ -200,50 +171,42 @@ def ai_filter_and_summarize(items):
 
     prompt = f"""你是一个专业的AI行业日报编辑。今天是{today}。
 
-以下是从多个来源抓取的原始内容列表，请你完成以下任务：
+请从以下原始内容中筛选AI相关内容，翻译成中文，并以JSON格式输出。
 
-1. 【筛选】只保留与以下主题相关的内容：
-   - AI模型动态（新模型发布、能力更新、评测）
-   - AI应用与产品（新产品、功能更新、用户案例）
-   - AI赚钱与变现（商业模式、收入案例、创业）
-   - AI头部企业动态（OpenAI、Anthropic、Google、Meta、百度、阿里等）
-   - AI垂类独角兽（融资、产品、动态）
-   - AI优秀实践案例
-   - AI学习资源与活动
+筛选主题：AI模型动态、AI应用产品、AI商业变现、AI企业动态、AI学习活动
 
-2. 【翻译】所有英文标题翻译成中文，保持原意，语言自然流畅
+输出格式（只输出JSON，不要任何其他文字）：
+{{
+  "date": "{today}",
+  "sections": [
+    {{
+      "title": "🤖 模型与技术",
+      "items": [
+        {{"title": "文章标题中文", "url": "原文链接", "source": "来源"}}
+      ]
+    }},
+    {{
+      "title": "📱 应用与产品",
+      "items": []
+    }},
+    {{
+      "title": "💰 商业与变现",
+      "items": []
+    }},
+    {{
+      "title": "🏢 企业动态",
+      "items": []
+    }},
+    {{
+      "title": "🎓 学习与活动",
+      "items": []
+    }}
+  ]
+}}
 
-3. 【分类输出】按以下格式输出日报，每个分类最多5条，整体不超过20条：
+每个分类最多5条，没有内容的分类返回空数组。
 
----
-📅 AI日报 · {today}
-（内容覆盖范围：昨日17:00 - 今日08:00）
-
-🤖 模型与技术
-• [标题中文] — 来源：XX
-  🔗 链接
-
-📱 应用与产品
-• [标题中文] — 来源：XX
-  🔗 链接
-
-💰 商业与变现
-• [标题中文] — 来源：XX
-  🔗 链接
-
-🏢 企业动态
-• [标题中文] — 来源：XX
-  🔗 链接
-
-🎓 学习与活动
-• [标题中文] — 来源：XX
-  🔗 链接
----
-
-如果某个分类没有相关内容，跳过该分类不输出。
-只输出日报内容，不要有任何多余的说明文字。
-
-原始内容如下：
+原始内容：
 {raw_text}
 """
 
@@ -263,98 +226,185 @@ def ai_filter_and_summarize(items):
             timeout=60
         )
         result = res.json()
-        content = result["choices"][0]["message"]["content"]
+        content = result["choices"][0]["message"]["content"].strip()
+        content = re.sub(r"^```json\s*", "", content)
+        content = re.sub(r"\s*```$", "", content)
+        data = json.loads(content)
         print("AI总结完成")
-        return content
+        return data
     except Exception as e:
         print(f"DeepSeek API 调用失败: {e}")
         return None
 
 
 # ============================================================
-# 第三步：推送（飞书 + 微信测试号，同时发送）
+# 第三步：生成精美 HTML 日报
 # ============================================================
 
-WX_TEST_APPID = os.environ.get("WX_TEST_APPID", "")
-WX_TEST_SECRET = os.environ.get("WX_TEST_SECRET", "")
-WX_TEST_OPENIDS = os.environ.get("WX_TEST_OPENIDS", "")
+def generate_html(data):
+    today = data.get("date", datetime.now().strftime("%Y年%m月%d日"))
+    sections_html = ""
+
+    for section in data.get("sections", []):
+        if not section.get("items"):
+            continue
+        items_html = ""
+        for item in section["items"]:
+            items_html += f"""
+            <div class="item">
+                <a href="{item['url']}" target="_blank" class="item-title">{item['title']}</a>
+                <span class="item-source">{item['source']}</span>
+            </div>"""
+
+        sections_html += f"""
+        <div class="section">
+            <h2 class="section-title">{section['title']}</h2>
+            {items_html}
+        </div>"""
+
+    html = f"""<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI日报 · {today}</title>
+<style>
+  * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+  body {{
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
+    background: #f0f2f5;
+    color: #333;
+    padding: 20px 16px;
+  }}
+  .container {{ max-width: 720px; margin: 0 auto; }}
+  .header {{
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border-radius: 16px;
+    padding: 28px 24px;
+    margin-bottom: 20px;
+    color: white;
+  }}
+  .header h1 {{ font-size: 22px; font-weight: 700; margin-bottom: 6px; }}
+  .header p {{ font-size: 13px; opacity: 0.85; }}
+  .section {{
+    background: white;
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 14px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }}
+  .section-title {{
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #f0f0f0;
+    color: #1a1a2e;
+  }}
+  .item {{
+    padding: 10px 0;
+    border-bottom: 1px solid #f7f7f7;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 10px;
+  }}
+  .item:last-child {{ border-bottom: none; padding-bottom: 0; }}
+  .item-title {{
+    font-size: 14px;
+    color: #2d5be3;
+    text-decoration: none;
+    line-height: 1.5;
+    flex: 1;
+  }}
+  .item-title:hover {{ text-decoration: underline; }}
+  .item-source {{
+    font-size: 11px;
+    color: #999;
+    white-space: nowrap;
+    background: #f5f5f5;
+    padding: 2px 8px;
+    border-radius: 10px;
+    margin-top: 2px;
+  }}
+  .footer {{
+    text-align: center;
+    font-size: 12px;
+    color: #bbb;
+    padding: 16px 0;
+  }}
+</style>
+</head>
+<body>
+<div class="container">
+  <div class="header">
+    <h1>📬 AI日报</h1>
+    <p>{today} · 自动抓取 · AI精选</p>
+  </div>
+  {sections_html}
+  <div class="footer">由 AI日报机器人自动生成 · {today}</div>
+</div>
+</body>
+</html>"""
+
+    # 保存到 docs/index.html（GitHub Pages 默认读取 docs 目录）
+    os.makedirs("docs", exist_ok=True)
+    with open("docs/index.html", "w", encoding="utf-8") as f:
+        f.write(html)
+    print("HTML日报生成完成：docs/index.html")
+    return html
 
 
-def push_via_feishu(report):
-    """推送到飞书群机器人"""
-    today = datetime.now().strftime("%Y年%m月%d日")
-    full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
+# ============================================================
+# 第四步：推送通知（飞书 + 微信，只发链接）
+# ============================================================
 
-    if not FEISHU_WEBHOOK:
-        print("FEISHU_WEBHOOK 未配置，跳过飞书推送")
-        return
+def push_notification(today):
+    url = GITHUB_PAGES_URL or "https://ivy0070923.github.io/ai-daily-report/"
+    msg = f"📬 AI日报 · {today}\n今日日报已生成，点击查看：\n{url}"
 
-    payload = {
-        "msg_type": "text",
-        "content": {"text": full_content}
-    }
-    res = requests.post(FEISHU_WEBHOOK, json=payload, timeout=15).json()
-
-    if res.get("code") == 0:
-        print("飞书推送成功！")
-    else:
-        print(f"飞书推送失败: {res}")
-
-
-def get_wx_token():
-    """获取微信测试号 access_token"""
-    url = (
-        f"https://api.weixin.qq.com/cgi-bin/token"
-        f"?grant_type=client_credential"
-        f"&appid={WX_TEST_APPID}&secret={WX_TEST_SECRET}"
-    )
-    res = requests.get(url, timeout=10).json()
-    token = res.get("access_token")
-    if not token:
-        raise Exception(f"获取微信Token失败: {res}")
-    return token
-
-
-def push_via_wx(report):
-    """推送到微信测试号（客服消息，无需IP白名单）"""
-    if not WX_TEST_APPID or not WX_TEST_SECRET or not WX_TEST_OPENIDS:
-        print("微信测试号未配置，跳过微信推送")
-        return
-
-    today = datetime.now().strftime("%Y年%m月%d日")
-    full_content = f"📬 AI日报 · {today}\n\n{report}\n\n— 由AI日报机器人自动生成"
-    openids = [o.strip() for o in WX_TEST_OPENIDS.split(",") if o.strip()]
-
-    try:
-        token = get_wx_token()
-    except Exception as e:
-        print(f"微信推送失败: {e}")
-        return
-
-    url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
-    max_len = 2000
-    chunks = [full_content[i:i+max_len] for i in range(0, len(full_content), max_len)]
-
-    success = 0
-    for openid in openids:
+    # 飞书推送
+    if FEISHU_WEBHOOK:
         try:
-            for chunk in chunks:
-                payload = {
+            res = requests.post(FEISHU_WEBHOOK, json={
+                "msg_type": "text",
+                "content": {"text": msg}
+            }, timeout=15).json()
+            if res.get("code") == 0:
+                print("飞书推送成功！")
+            else:
+                print(f"飞书推送失败: {res}")
+        except Exception as e:
+            print(f"飞书推送异常: {e}")
+
+    # 微信推送
+    if WX_TEST_APPID and WX_TEST_SECRET and WX_TEST_OPENIDS:
+        try:
+            token_res = requests.get(
+                f"https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid={WX_TEST_APPID}&secret={WX_TEST_SECRET}",
+                timeout=10
+            ).json()
+            token = token_res.get("access_token")
+            if not token:
+                raise Exception(f"获取Token失败: {token_res}")
+
+            openids = [o.strip() for o in WX_TEST_OPENIDS.split(",") if o.strip()]
+            wx_url = f"https://api.weixin.qq.com/cgi-bin/message/custom/send?access_token={token}"
+            success = 0
+            for openid in openids:
+                res = requests.post(wx_url, json={
                     "touser": openid,
                     "msgtype": "text",
-                    "text": {"content": chunk}
-                }
-                res = requests.post(url, json=payload, timeout=15).json()
-                if res.get("errcode") != 0:
-                    raise Exception(f"发送失败: {res}")
-                if len(chunks) > 1:
-                    time.sleep(0.5)
-            success += 1
-            print(f"  微信发送给 {openid[:8]}... 成功")
+                    "text": {"content": msg}
+                }, timeout=15).json()
+                if res.get("errcode") == 0:
+                    success += 1
+                    print(f"  微信发送给 {openid[:8]}... 成功")
+                else:
+                    print(f"  微信发送给 {openid[:8]}... 失败: {res}")
+            print(f"微信推送完成：{success}/{len(openids)} 人成功")
         except Exception as e:
-            print(f"  微信发送给 {openid[:8]}... 失败: {e}")
-
-    print(f"微信推送完成：{success}/{len(openids)} 人成功")
+            print(f"微信推送异常: {e}")
 
 
 # ============================================================
@@ -371,19 +421,17 @@ def main():
         print("未抓取到任何内容，退出")
         return
 
-    report = ai_filter_and_summarize(items)
-    if not report:
+    data = ai_filter_and_summarize(items)
+    if not data:
         print("AI总结失败，退出")
         return
 
-    print("\n===== 日报预览 =====")
-    print(report)
-    print("=" * 50)
+    generate_html(data)
 
-    # 飞书和微信同时推送
-    push_via_feishu(report)
-    push_via_wx(report)
-    print("全部推送完成！")
+    today = data.get("date", datetime.now().strftime("%Y年%m月%d日"))
+    push_notification(today)
+
+    print("全部完成！")
 
 
 if __name__ == "__main__":
