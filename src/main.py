@@ -216,14 +216,78 @@ def collect_all_content():
 # 第二步：DeepSeek AI 过滤+翻译+总结（返回结构化数据）
 # ============================================================
 
+def smart_select_items(items, total=40):
+    """
+    智能选取算法：
+    1. 每个来源至少保留1条（保证多样性）
+    2. 剩余名额按来源权重分配
+    3. 同来源内按抓取顺序（越新越前）
+    """
+    # 来源权重配置（权重越高，同等条件下越优先）
+    SOURCE_WEIGHTS = {
+        "Anthropic":      10,
+        "OpenAI":         10,
+        "Google AI":       9,
+        "机器之心":         8,
+        "量子位":           8,
+        "36氪":            7,
+        "TechCrunch":      7,
+        "The Verge":       6,
+        "IndieHackers":    5,
+        "ProductHunt":     5,
+        "Hacker News":     4,
+        "BestBlogs早报":   8,
+        "BestBlogs精选":   7,
+    }
+    DEFAULT_WEIGHT = 3
+
+    # 按来源分组
+    from collections import defaultdict
+    source_groups = defaultdict(list)
+    for item in items:
+        source_groups[item["source"]].append(item)
+
+    selected = []
+
+    # 第一轮：每个来源至少选1条（按权重排序来源）
+    sources_sorted = sorted(
+        source_groups.keys(),
+        key=lambda s: SOURCE_WEIGHTS.get(s, DEFAULT_WEIGHT),
+        reverse=True
+    )
+    for source in sources_sorted:
+        if source_groups[source]:
+            selected.append(source_groups[source][0])  # 取最新一条
+
+    # 第二轮：剩余名额按权重从各来源继续补充
+    remaining = total - len(selected)
+    if remaining > 0:
+        # 把所有未选的条目放入候选池，按来源权重打分
+        candidates = []
+        for source in sources_sorted:
+            for item in source_groups[source][1:]:  # 跳过已选的第一条
+                weight = SOURCE_WEIGHTS.get(source, DEFAULT_WEIGHT)
+                candidates.append((weight, item))
+
+        # 按权重降序排列，补充剩余名额
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        for _, item in candidates[:remaining]:
+            selected.append(item)
+
+    print(f"智能选取：从 {len(items)} 条中选出 {len(selected)} 条，覆盖 {len(source_groups)} 个来源")
+    # 打印各来源入选数量
+    from collections import Counter
+    counts = Counter(i["source"] for i in selected)
+    for src, cnt in sorted(counts.items(), key=lambda x: -x[1]):
+        print(f"  {src}: {cnt} 条")
+    return selected
+
+
 def ai_filter_and_summarize(items):
     today = datetime.now().strftime("%Y年%m月%d日")
-    # 限制最多40条，按优先级来源排序后截取
-    PRIORITY_SOURCES = ["Anthropic", "OpenAI", "Google AI", "机器之心", "量子位", "36氪",
-                        "TechCrunch", "The Verge", "BestBlogs早报", "BestBlogs精选"]
-    priority_items = [i for i in items if i["source"] in PRIORITY_SOURCES]
-    other_items = [i for i in items if i["source"] not in PRIORITY_SOURCES]
-    items = (priority_items + other_items)[:40]
+
+    # 智能选取：每个来源至少1条，按权重补充剩余名额
+    items = smart_select_items(items, total=40)
 
     # 只传标题和链接，减少token消耗
     raw_text = ""
