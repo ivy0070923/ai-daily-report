@@ -34,11 +34,21 @@ jobs:
           WX_TEST_APPID: ${{ secrets.WX_TEST_APPID }}
           WX_TEST_SECRET: ${{ secrets.WX_TEST_SECRET }}
           WX_TEST_OPENIDS: ${{ secrets.WX_TEST_OPENIDS }}
+          BESTBLOGS_API_KEY: ${{ secrets.BESTBLOGS_API_KEY }}
           GITHUB_PAGES_URL: https://ivy0070923.github.io/ai-daily-report/
         run: |
           python src/main.py
 
+      - name: 确保 docs 目录存在
+        if: always()
+        run: |
+          mkdir -p docs
+          if [ ! -f docs/index.html ]; then
+            echo "<html><body><p>日报生成中，请稍后刷新...</p></body></html>" > docs/index.html
+          fi
+
       - name: 发布到 GitHub Pages
+        if: always()
         uses: actions/upload-pages-artifact@v3
         with:
           path: docs
@@ -46,6 +56,7 @@ jobs:
   deploy:
     needs: send-daily-report
     runs-on: ubuntu-latest
+    if: always()
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
